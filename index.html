@@ -69,6 +69,8 @@
         }
         #lightbox.active { display: flex; animation: fadeIn 0.3s ease; }
         #lightbox img, #lightbox video { max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 8px; }
+        #lightbox-embed iframe { width: 100%; height: 100%; border: 0; }
+        #lightbox img, #lightbox video, #lightbox-embed, #lightbox-close { pointer-events: auto; }
 
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
@@ -142,11 +144,12 @@
     <div id="toast"></div>
 
     <!-- Lightbox -->
-    <div id="lightbox" onclick="closeLightbox(event)">
-        <img src="" id="lightbox-img" class="hidden">
-        <video id="lightbox-video" class="hidden" controls></video>
-        <iframe id="lightbox-iframe" class="hidden w-full max-w-5xl h-[70vh] rounded-xl shadow-2xl" frameborder="0" allowfullscreen></iframe>
-        <button class="absolute top-6 right-6 text-white text-3xl"><i class="fas fa-times"></i></button>
+    <div id="lightbox">
+        <div id="lightbox-backdrop" class="absolute inset-0"></div>
+        <img src="" id="lightbox-img" class="hidden relative z-[201]" alt="확대 이미지">
+        <video id="lightbox-video" class="hidden relative z-[201]" controls playsinline preload="metadata"></video>
+        <div id="lightbox-embed" class="hidden relative z-[201] w-[90%] max-w-5xl aspect-video bg-black rounded-lg overflow-hidden"></div>
+        <button id="lightbox-close" class="absolute top-6 right-6 text-white text-3xl z-[202]" type="button" aria-label="닫기"><i class="fas fa-times"></i></button>
     </div>
 
     <!-- Admin Bar -->
@@ -319,83 +322,56 @@
         };
 
         // --- Firebase Setup (Cloud Save) ---
-        let app, auth, db;
-        let currentUser = null;
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let currentUser = null;
 
-        try {
-            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-            if (Object.keys(firebaseConfig).length > 0) {
-                app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-
-                const initAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                };
-                initAuth();
-
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        currentUser = user;
-                        await loadDataFromCloud();
-                    } else {
-                        currentUser = null;
-                    }
-                });
+        const initAuth = async () => {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
             } else {
-                // 파이어베이스 설정이 없으면 로컬 모드로 즉시 실행
-                setTimeout(loadDataFromCloud, 100);
+                await signInAnonymously(auth);
             }
-        } catch (e) {
-            console.warn("Firebase 초기화 건너뜀 (로컬 모드):", e);
-            setTimeout(loadDataFromCloud, 100);
-        }
+        };
+
+        initAuth();
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                await loadDataFromCloud();
+            } else {
+                currentUser = null;
+            }
+        });
 
         async function loadDataFromCloud() {
-            if (currentUser && db) {
-                try {
-                    // 1. 새로운 공용 경로 데이터 확인
-                    const publicRef = doc(db, 'artifacts', appId, 'public', 'data', 'portfolio', 'main_data');
-                    const publicSnap = await getDoc(publicRef);
-                    if (publicSnap.exists()) {
-                        const parsed = publicSnap.data();
-                        state = { ...defaultData, ...parsed };
-                        if (parsed.hero) state.hero = { ...defaultData.hero, ...parsed.hero };
-                        localStorage.setItem('portfolio_data_v10', JSON.stringify(state));
-                        window.renderAll();
-                        return;
+            if (!currentUser) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'portfolio', 'data');
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const parsed = docSnap.data();
+                    state = { ...defaultData, ...parsed };
+                    if (parsed.hero) state.hero = { ...defaultData.hero, ...parsed.hero };
+                    localStorage.setItem('portfolio_data_v10', JSON.stringify(state));
+                } else {
+                    const localData = localStorage.getItem('portfolio_data_v10') || localStorage.getItem('portfolio_data_v9');
+                    if (localData) {
+                        state = { ...defaultData, ...JSON.parse(localData) };
+                        window.saveData();
+                    } else {
+                        state = JSON.parse(JSON.stringify(defaultData));
                     }
-
-                    // 2. 기존 개인 경로 데이터 확인 및 자동 복구 (마이그레이션)
-                    const privateRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'portfolio', 'data');
-                    const privateSnap = await getDoc(privateRef);
-                    if (privateSnap.exists()) {
-                        const parsed = privateSnap.data();
-                        state = { ...defaultData, ...parsed };
-                        if (parsed.hero) state.hero = { ...defaultData.hero, ...parsed.hero };
-                        window.saveData(); // 복구된 데이터를 새로운 공용 경로로 저장
-                        window.renderAll();
-                        return;
-                    }
-                } catch (e) {
-                    console.error("Cloud Load Error:", e);
                 }
+                window.renderAll();
+            } catch (e) {
+                console.error("Cloud Load Error:", e);
+                window.renderAll();
             }
-            
-            // 클라우드 데이터를 못 가져오면 로컬 스토리지 데이터로 폴백
-            const localData = localStorage.getItem('portfolio_data_v10') || localStorage.getItem('portfolio_data_v9');
-            if (localData) {
-                state = { ...defaultData, ...JSON.parse(localData) };
-                window.saveData();
-            } else {
-                state = JSON.parse(JSON.stringify(defaultData));
-            }
-            window.renderAll();
         }
 
         window.saveData = async function() {
@@ -420,13 +396,13 @@
                 console.warn("로컬 저장소 공간 부족", e);
             }
 
-            if (!currentUser || !db) {
-                showToast("기기에 저장되었습니다. (로컬 모드)");
+            if (!currentUser) {
+                showToast("기기에 저장되었습니다.");
                 return;
             }
             
             try {
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'portfolio', 'main_data');
+                const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'portfolio', 'data');
                 await setDoc(docRef, state);
                 showToast("기기 및 클라우드에 저장되었습니다.");
             } catch (e) {
@@ -571,9 +547,9 @@
             if(state.contactTitle) document.getElementById('contact-title').innerText = state.contactTitle;
 
             const grid = document.getElementById('work-grid');
-            
-            // 기존 프로젝트 카드만 삭제 (업로드 드롭존 영역 및 이벤트 보호)
-            grid.querySelectorAll('.work-card').forEach(card => card.remove());
+            const adminControls = grid.querySelector('.edit-only');
+            grid.innerHTML = '';
+            if (adminControls) grid.appendChild(adminControls);
 
             const filteredProjects = currentFilter === 'all' 
                 ? state.projects 
@@ -589,13 +565,15 @@
 
                 let mediaHtml = "";
                 if (isVideo && isEmbed && !isEditMode() && !p.thumbnailUrl) {
-                    mediaHtml = `<div class="video-container"><iframe src="${p.url}" frameborder="0" allowfullscreen></iframe></div>`;
+                    mediaHtml = `<button type="button" class="video-container block w-full text-left" onclick="viewFullScreen(${JSON.stringify(p.url)}, ${JSON.stringify(p.type)})" aria-label="영상 열기">
+                        <iframe src="${p.url}" frameborder="0" allowfullscreen></iframe>
+                    </button>`;
                 } else {
                     const poster = displayThumbnail || (isVideo ? 'https://via.placeholder.com/600x400/000000/FFFFFF?text=Video+File' : '');
-                    mediaHtml = `<div class="h-64 overflow-hidden relative group/img cursor-pointer" onclick="viewProjectFullscreen(${p.id})">
-                        <img src="${poster}" class="w-full h-full object-cover transition duration-700 group-hover/img:scale-110">
-                        ${isVideo ? '<div class="absolute inset-0 flex items-center justify-center bg-black/20 text-white text-4xl"><i class="fas fa-play-circle"></i></div>' : ''}
-                      </div>`;
+                    mediaHtml = `<button type="button" class="h-64 overflow-hidden relative group/img block w-full text-left touch-manipulation" onclick='viewFullScreen(${JSON.stringify(p.url)}, ${JSON.stringify(p.type)})' aria-label="${isVideo ? '영상 열기' : '이미지 열기'}">
+                        <img src="${poster}" class="w-full h-full object-cover transition duration-700 group-hover/img:scale-110" alt="${p.title || '프로젝트 미리보기'}">
+                        ${isVideo ? '<div class="absolute inset-0 flex items-center justify-center bg-black/20 text-white text-4xl pointer-events-none"><i class="fas fa-play-circle"></i></div>' : ''}
+                      </button>`;
                 }
 
                 card.innerHTML = `
@@ -637,7 +615,7 @@
                                            value="${p.url.startsWith('data:') ? '로컬 직접 업로드 파일' : p.url}" 
                                            ${p.url.startsWith('data:') ? 'readonly' : ''}
                                            onchange="if(!this.value.startsWith('로컬')) { updateProject(${p.id}, 'url', this.value); renderAll(); }">
-                                    <button class="bg-red-50 text-red-500 hover:bg-red-100 px-2 rounded mt-1 text-[10px] font-bold whitespace-nowrap transition" onclick="triggerMainUpload(${p.id})" title="새 원본 파일 덮어쓰기"><i class="fas fa-upload"></i> 원본</button>
+                                    <button class="bg-blue-100 text-blue-600 px-2 rounded mt-1 text-xs" onclick="triggerMainUpload(${p.id})" title="새 원본 파일 업로드"><i class="fas fa-upload"></i></button>
                                 </div>
                             </div>
                             <div>
@@ -648,7 +626,7 @@
                                            ${(p.thumbnailUrl || '').startsWith('data:') ? 'readonly' : ''}
                                            placeholder="공백 시 원본 이미지 사용" 
                                            onchange="if(!this.value.startsWith('로컬')) { updateProject(${p.id}, 'thumbnailUrl', this.value); renderAll(); }">
-                                    <button class="bg-blue-50 text-blue-600 hover:bg-blue-100 px-2 rounded mt-1 text-[10px] font-bold whitespace-nowrap transition" onclick="triggerThumbUpload(${p.id})" title="새 썸네일 업로드"><i class="fas fa-image"></i> 썸네일</button>
+                                    <button class="bg-blue-100 text-blue-600 px-2 rounded mt-1 text-xs" onclick="triggerThumbUpload(${p.id})" title="새 썸네일 업로드"><i class="fas fa-image"></i></button>
                                 </div>
                             </div>
                             <div>
@@ -664,51 +642,52 @@
             renderSecondaryInfo();
         }
 
-        window.viewProjectFullscreen = function(id) {
-            if (isEditMode()) return;
-            const p = state.projects.find(x => x.id === id);
-            if (!p) return;
-
+        window.closeLightbox = function() {
             const lb = document.getElementById('lightbox');
             const lbImg = document.getElementById('lightbox-img');
             const lbVid = document.getElementById('lightbox-video');
-            const lbIframe = document.getElementById('lightbox-iframe');
+            const lbEmbed = document.getElementById('lightbox-embed');
+            lb.classList.remove('active');
+            lbImg.classList.add('hidden');
+            lbImg.src = '';
+            lbVid.pause();
+            lbVid.removeAttribute('src');
+            lbVid.load();
+            lbVid.classList.add('hidden');
+            lbEmbed.innerHTML = '';
+            lbEmbed.classList.add('hidden');
+        }
+
+        window.viewFullScreen = function(url, type) {
+            if (isEditMode()) return;
+            const lb = document.getElementById('lightbox');
+            const lbImg = document.getElementById('lightbox-img');
+            const lbVid = document.getElementById('lightbox-video');
+            const lbEmbed = document.getElementById('lightbox-embed');
 
             lbImg.classList.add('hidden');
             lbVid.classList.add('hidden');
-            lbIframe.classList.add('hidden');
-            
+            lbEmbed.classList.add('hidden');
+            lbEmbed.innerHTML = '';
             lbVid.pause();
-            lbVid.src = '';
-            lbIframe.src = '';
+            lbVid.removeAttribute('src');
+            lbVid.load();
 
-            if (p.type === 'video') {
-                if (isEmbedVideo(p.url)) {
-                    lbIframe.src = p.url;
-                    lbIframe.classList.remove('hidden');
+            if (type === 'video') {
+                if (isEmbedVideo(url)) {
+                    lbEmbed.innerHTML = `<iframe src="${url}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+                    lbEmbed.classList.remove('hidden');
                 } else {
-                    lbVid.src = p.url;
+                    lbVid.src = url;
                     lbVid.classList.remove('hidden');
-                    lbVid.play();
+                    const playPromise = lbVid.play();
+                    if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
                 }
             } else {
-                lbImg.src = p.url;
+                lbImg.src = url;
                 lbImg.classList.remove('hidden');
             }
             lb.classList.add('active');
-        }
-
-        window.closeLightbox = function(e) {
-            // 비디오나 iframe 조작 영역을 클릭했을 땐 창이 닫히지 않도록 방어
-            if (e && (e.target.tagName === 'VIDEO' || e.target.tagName === 'IFRAME')) return;
-            
-            const lb = document.getElementById('lightbox');
-            lb.classList.remove('active');
-            
-            const vid = document.getElementById('lightbox-video');
-            vid.pause();
-            vid.src = '';
-            document.getElementById('lightbox-iframe').src = '';
         }
 
         window.triggerMainUpload = function(projId) {
@@ -752,10 +731,8 @@
         async function handleFiles(files) {
             for (let file of Array.from(files)) {
                 const id = Date.now() + Math.random();
-                // OS에 따라 MIME 타입이 비어있을 수 있으므로 확장자 검사 추가
-                const isVideo = file.type.startsWith('video') || (file.name && file.name.match(/\.(mp4|webm|ogg|mov)$/i));
-                const isImage = file.type.startsWith('image') || (file.name && file.name.match(/\.(jpg|jpeg|png|gif|webp)$/i));
-                
+                const isVideo = file.type.startsWith('video');
+                const isImage = file.type.startsWith('image');
                 if (!isVideo && !isImage) continue;
 
                 const reader = new FileReader();
@@ -807,31 +784,41 @@
         }
         document.getElementById('mobile-menu-btn').addEventListener('click', window.toggleMobileMenu);
 
+        document.getElementById('lightbox-backdrop').addEventListener('click', window.closeLightbox);
+        document.getElementById('lightbox-close').addEventListener('click', window.closeLightbox);
+        document.getElementById('lightbox-img').addEventListener('click', (e) => e.stopPropagation());
+        document.getElementById('lightbox-video').addEventListener('click', (e) => e.stopPropagation());
+        document.getElementById('lightbox-video').addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+        document.getElementById('lightbox-embed').addEventListener('click', (e) => e.stopPropagation());
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') window.closeLightbox();
+        });
+
         const dropZone = document.getElementById('drop-zone');
         dropZone.onclick = () => document.getElementById('file-input').click();
         dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('bg-blue-50'); };
         dropZone.ondragleave = () => dropZone.classList.remove('bg-blue-50');
         dropZone.ondrop = (e) => { e.preventDefault(); dropZone.classList.remove('bg-blue-50'); handleFiles(e.dataTransfer.files); };
-        document.getElementById('file-input').onchange = (e) => { 
-            handleFiles(e.target.files); 
-            e.target.value = ''; // 동일 파일 재선택 시에도 업로드 되도록 값 초기화
-        };
+        document.getElementById('file-input').onchange = (e) => handleFiles(e.target.files);
 
         window.openModal = function() { document.getElementById('link-modal').classList.add('active'); }
         window.closeModal = function() { document.getElementById('link-modal').classList.remove('active'); }
         
         window.addLinkProject = function() {
-            const url = document.getElementById('url-input').value;
-            const thumb = document.getElementById('thumb-input').value;
-            const category = document.getElementById('category-input-text').value || 'video';
+            const url = document.getElementById('url-input').value.trim();
+            const thumb = document.getElementById('thumb-input').value.trim();
+            const category = (document.getElementById('category-input-text').value || 'video').trim().toLowerCase();
             if(!url) return;
             let finalUrl = url;
             if (url.includes('youtube.com/watch?v=')) finalUrl = url.replace('watch?v=', 'embed/');
-            else if (url.includes('youtu.be/')) finalUrl = 'https://www.youtube.com/embed/' + url.split('/').pop();
+            else if (url.includes('youtu.be/')) finalUrl = 'https://www.youtube.com/embed/' + url.split('/').pop().split('?')[0];
 
-            state.projects.unshift({ id: Date.now(), type: 'video', category, url: finalUrl, thumbnailUrl: thumb, title: '새 링크 프로젝트', desc: '설명 입력', tools: 'Video' });
+            const looksLikeVideo = /(youtube\.com|youtu\.be|vimeo\.com|\.mp4($|\?)|\.webm($|\?)|\.mov($|\?)|\.m4v($|\?))/i.test(finalUrl);
+            state.projects.unshift({ id: Date.now(), type: looksLikeVideo ? 'video' : 'image', category, url: finalUrl, thumbnailUrl: thumb, title: '새 링크 프로젝트', desc: '설명 입력', tools: looksLikeVideo ? 'Video' : 'Image' });
             window.saveData(); window.renderAll(); window.closeModal();
             document.getElementById('url-input').value = '';
+            document.getElementById('thumb-input').value = '';
+            document.getElementById('category-input-text').value = '';
         }
 
         window.deleteProject = function(id) { state.projects = state.projects.filter(p => p.id !== id); window.saveData(); window.renderAll(); }
