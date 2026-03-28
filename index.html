@@ -142,10 +142,9 @@
     <div id="toast"></div>
 
     <!-- Lightbox -->
-    <div id="lightbox" onclick="closeLightbox(event)">
+    <div id="lightbox" onclick="this.classList.remove('active'); document.getElementById('lightbox-video').pause();">
         <img src="" id="lightbox-img" class="hidden">
         <video id="lightbox-video" class="hidden" controls></video>
-        <iframe id="lightbox-iframe" class="hidden w-full max-w-5xl h-[70vh] rounded-xl shadow-2xl" frameborder="0" allowfullscreen></iframe>
         <button class="absolute top-6 right-6 text-white text-3xl"><i class="fas fa-times"></i></button>
     </div>
 
@@ -235,11 +234,14 @@
                     <p class="text-gray-500">이미지나 영상을 드래그하여 업로드하세요. (영상 파일도 지원합니다)</p>
                 </div>
                 <!-- Filter Tabs -->
-                <div class="flex flex-wrap gap-2" id="filter-container">
-                    <button class="filter-tab active px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('all')">프로젝트</button>
-                    <button class="filter-tab px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('2d')">2D</button>
-                    <button class="filter-tab px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('3d')">3D</button>
-                    <button class="filter-tab px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('video')">영상</button>
+                <div class="flex flex-col sm:flex-row flex-wrap gap-3 sm:items-center">
+                    <input type="text" id="project-search" class="px-4 py-2 rounded-full border text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white" placeholder="프로젝트 검색" oninput="setSearch(this.value)">
+                    <div class="flex flex-wrap gap-2" id="filter-container">
+                        <button class="filter-tab active px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('all')">프로젝트</button>
+                        <button class="filter-tab px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('2d')">2D</button>
+                        <button class="filter-tab px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('3d')">3D</button>
+                        <button class="filter-tab px-5 py-2 rounded-full border text-sm font-bold transition" onclick="setFilter('video')">영상</button>
+                    </div>
                 </div>
             </div>
 
@@ -301,6 +303,7 @@
 
         const apiKey = ""; 
         let currentFilter = 'all';
+        let searchQuery = '';
         
         let state = { hero: {}, projects: [], careers: [], skills: [], contact: [] };
 
@@ -319,70 +322,65 @@
         };
 
         // --- Firebase Setup (Cloud Save) ---
-        let app, auth, db;
-        let currentUser = null;
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const hasFirebaseConfig = firebaseConfig && Object.keys(firebaseConfig).length > 0;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let currentUser = null;
+        let app = null;
+        let auth = null;
+        let db = null;
 
-        try {
-            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-            if (Object.keys(firebaseConfig).length > 0) {
-                app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
+        if (hasFirebaseConfig) {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
 
-                const initAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                };
-                initAuth();
+            const initAuth = async () => {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            };
 
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        currentUser = user;
-                        await loadDataFromCloud();
-                    } else {
-                        currentUser = null;
-                    }
-                });
-            } else {
-                // 파이어베이스 설정이 없으면 로컬 모드로 즉시 실행
-                setTimeout(loadDataFromCloud, 100);
-            }
-        } catch (e) {
-            console.warn("Firebase 초기화 건너뜀 (로컬 모드):", e);
-            setTimeout(loadDataFromCloud, 100);
+            initAuth().catch((e) => console.error('Firebase Auth Error:', e));
+
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    currentUser = user;
+                    await loadDataFromCloud();
+                } else {
+                    currentUser = null;
+                }
+            });
+        } else {
+            console.warn('Firebase config not found. Running in local-only mode.');
         }
 
         async function loadDataFromCloud() {
-            if (currentUser && db) {
-                try {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'portfolio', 'main_data');
-                    const docSnap = await getDoc(docRef);
-                    if (docSnap.exists()) {
-                        const parsed = docSnap.data();
-                        state = { ...defaultData, ...parsed };
-                        if (parsed.hero) state.hero = { ...defaultData.hero, ...parsed.hero };
-                        localStorage.setItem('portfolio_data_v10', JSON.stringify(state));
-                        window.renderAll();
-                        return;
+            if (!currentUser) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'portfolio', 'data');
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const parsed = docSnap.data();
+                    state = { ...defaultData, ...parsed };
+                    if (parsed.hero) state.hero = { ...defaultData.hero, ...parsed.hero };
+                    localStorage.setItem('portfolio_data_v10', JSON.stringify(state));
+                } else {
+                    const localData = localStorage.getItem('portfolio_data_v10') || localStorage.getItem('portfolio_data_v9');
+                    if (localData) {
+                        state = { ...defaultData, ...JSON.parse(localData) };
+                        window.saveData();
+                    } else {
+                        state = JSON.parse(JSON.stringify(defaultData));
                     }
-                } catch (e) {
-                    console.error("Cloud Load Error:", e);
                 }
+                window.renderAll();
+            } catch (e) {
+                console.error("Cloud Load Error:", e);
+                window.renderAll();
             }
-            
-            // 클라우드 데이터를 못 가져오면 로컬 스토리지 데이터로 폴백
-            const localData = localStorage.getItem('portfolio_data_v10') || localStorage.getItem('portfolio_data_v9');
-            if (localData) {
-                state = { ...defaultData, ...JSON.parse(localData) };
-                window.saveData();
-            } else {
-                state = JSON.parse(JSON.stringify(defaultData));
-            }
-            window.renderAll();
         }
 
         window.saveData = async function() {
@@ -407,13 +405,13 @@
                 console.warn("로컬 저장소 공간 부족", e);
             }
 
-            if (!currentUser || !db) {
-                showToast("기기에 저장되었습니다. (로컬 모드)");
+            if (!currentUser) {
+                showToast("기기에 저장되었습니다.");
                 return;
             }
             
             try {
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'portfolio', 'main_data');
+                const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'portfolio', 'data');
                 await setDoc(docRef, state);
                 showToast("기기 및 클라우드에 저장되었습니다.");
             } catch (e) {
@@ -464,6 +462,15 @@
         async function analyzeImage(base64Data, mimeType) {
             if (!mimeType.startsWith('image')) return { title: "새로운 영상 프로젝트", description: "동영상 프로젝트입니다.", category: "video", tools: "Video Tool" };
             const prompt = `Analyze this image and provide a JSON response with: 'title', 'description' (in Korean, max 2 sentences), 'category' ('2d' or '3d'), 'tools' (comma separated tools).`;
+            
+            if (!apiKey) {
+                return { 
+                    title: "업로드된 이미지", 
+                    desc: "API 키가 없어 AI 분석을 건너뛰었습니다. 직접 입력해주세요.", 
+                    category: "2d", 
+                    tools: "" 
+                };
+            }
             
             try {
                 const base64String = base64Data.split(',')[1];
@@ -538,6 +545,11 @@
             window.renderAll();
         };
 
+        window.setSearch = function(query) {
+            searchQuery = (query || '').trim().toLowerCase();
+            window.renderAll();
+        }
+
         window.setFilter = function(filter) {
             currentFilter = filter;
             document.querySelectorAll('.filter-tab').forEach(tab => {
@@ -556,15 +568,23 @@
             if(state.aboutText) document.getElementById('about-text').innerText = state.aboutText;
             if(state.quote) document.getElementById('quote').innerText = state.quote;
             if(state.contactTitle) document.getElementById('contact-title').innerText = state.contactTitle;
+            const searchInput = document.getElementById('project-search');
+            if (searchInput && searchInput.value !== searchQuery) searchInput.value = searchQuery;
 
             const grid = document.getElementById('work-grid');
-            
-            // 기존 프로젝트 카드만 삭제 (업로드 드롭존 영역 및 이벤트 보호)
-            grid.querySelectorAll('.work-card').forEach(card => card.remove());
+            const adminControls = grid.querySelector('.edit-only');
+            grid.innerHTML = '';
+            if (adminControls) grid.appendChild(adminControls);
 
-            const filteredProjects = currentFilter === 'all' 
+            const filteredByCategory = currentFilter === 'all' 
                 ? state.projects 
                 : state.projects.filter(p => p.category === currentFilter);
+
+            const filteredProjects = filteredByCategory.filter(p => {
+                if (!searchQuery) return true;
+                const haystack = [p.title, p.desc, p.category, p.tools].join(' ').toLowerCase();
+                return haystack.includes(searchQuery);
+            });
 
             filteredProjects.forEach(p => {
                 const card = document.createElement('div');
@@ -579,7 +599,7 @@
                     mediaHtml = `<div class="video-container"><iframe src="${p.url}" frameborder="0" allowfullscreen></iframe></div>`;
                 } else {
                     const poster = displayThumbnail || (isVideo ? 'https://via.placeholder.com/600x400/000000/FFFFFF?text=Video+File' : '');
-                    mediaHtml = `<div class="h-64 overflow-hidden relative group/img cursor-pointer" onclick="viewProjectFullscreen(${p.id})">
+                    mediaHtml = `<div class="h-64 overflow-hidden relative group/img" onclick="viewFullScreen('${p.url}', '${p.type}')">
                         <img src="${poster}" class="w-full h-full object-cover transition duration-700 group-hover/img:scale-110">
                         ${isVideo ? '<div class="absolute inset-0 flex items-center justify-center bg-black/20 text-white text-4xl"><i class="fas fa-play-circle"></i></div>' : ''}
                       </div>`;
@@ -624,7 +644,7 @@
                                            value="${p.url.startsWith('data:') ? '로컬 직접 업로드 파일' : p.url}" 
                                            ${p.url.startsWith('data:') ? 'readonly' : ''}
                                            onchange="if(!this.value.startsWith('로컬')) { updateProject(${p.id}, 'url', this.value); renderAll(); }">
-                                    <button class="bg-red-50 text-red-500 hover:bg-red-100 px-2 rounded mt-1 text-[10px] font-bold whitespace-nowrap transition" onclick="triggerMainUpload(${p.id})" title="새 원본 파일 덮어쓰기"><i class="fas fa-upload"></i> 원본</button>
+                                    <button class="bg-blue-100 text-blue-600 px-2 rounded mt-1 text-xs" onclick="triggerMainUpload(${p.id})" title="새 원본 파일 업로드"><i class="fas fa-upload"></i></button>
                                 </div>
                             </div>
                             <div>
@@ -635,7 +655,7 @@
                                            ${(p.thumbnailUrl || '').startsWith('data:') ? 'readonly' : ''}
                                            placeholder="공백 시 원본 이미지 사용" 
                                            onchange="if(!this.value.startsWith('로컬')) { updateProject(${p.id}, 'thumbnailUrl', this.value); renderAll(); }">
-                                    <button class="bg-blue-50 text-blue-600 hover:bg-blue-100 px-2 rounded mt-1 text-[10px] font-bold whitespace-nowrap transition" onclick="triggerThumbUpload(${p.id})" title="새 썸네일 업로드"><i class="fas fa-image"></i> 썸네일</button>
+                                    <button class="bg-blue-100 text-blue-600 px-2 rounded mt-1 text-xs" onclick="triggerThumbUpload(${p.id})" title="새 썸네일 업로드"><i class="fas fa-image"></i></button>
                                 </div>
                             </div>
                             <div>
@@ -651,51 +671,25 @@
             renderSecondaryInfo();
         }
 
-        window.viewProjectFullscreen = function(id) {
+        window.viewFullScreen = function(url, type) {
             if (isEditMode()) return;
-            const p = state.projects.find(x => x.id === id);
-            if (!p) return;
-
             const lb = document.getElementById('lightbox');
             const lbImg = document.getElementById('lightbox-img');
             const lbVid = document.getElementById('lightbox-video');
-            const lbIframe = document.getElementById('lightbox-iframe');
 
-            lbImg.classList.add('hidden');
-            lbVid.classList.add('hidden');
-            lbIframe.classList.add('hidden');
-            
-            lbVid.pause();
-            lbVid.src = '';
-            lbIframe.src = '';
-
-            if (p.type === 'video') {
-                if (isEmbedVideo(p.url)) {
-                    lbIframe.src = p.url;
-                    lbIframe.classList.remove('hidden');
-                } else {
-                    lbVid.src = p.url;
-                    lbVid.classList.remove('hidden');
-                    lbVid.play();
-                }
+            if (type === 'video') {
+                if (isEmbedVideo(url)) { window.open(url, '_blank'); return; }
+                lbImg.classList.add('hidden');
+                lbVid.classList.remove('hidden');
+                lbVid.src = url;
+                lbVid.play();
             } else {
-                lbImg.src = p.url;
+                lbVid.classList.add('hidden');
+                lbVid.pause();
                 lbImg.classList.remove('hidden');
+                lbImg.src = url;
             }
             lb.classList.add('active');
-        }
-
-        window.closeLightbox = function(e) {
-            // 비디오나 iframe 조작 영역을 클릭했을 땐 창이 닫히지 않도록 방어
-            if (e && (e.target.tagName === 'VIDEO' || e.target.tagName === 'IFRAME')) return;
-            
-            const lb = document.getElementById('lightbox');
-            lb.classList.remove('active');
-            
-            const vid = document.getElementById('lightbox-video');
-            vid.pause();
-            vid.src = '';
-            document.getElementById('lightbox-iframe').src = '';
         }
 
         window.triggerMainUpload = function(projId) {
@@ -739,10 +733,8 @@
         async function handleFiles(files) {
             for (let file of Array.from(files)) {
                 const id = Date.now() + Math.random();
-                // OS에 따라 MIME 타입이 비어있을 수 있으므로 확장자 검사 추가
-                const isVideo = file.type.startsWith('video') || (file.name && file.name.match(/\.(mp4|webm|ogg|mov)$/i));
-                const isImage = file.type.startsWith('image') || (file.name && file.name.match(/\.(jpg|jpeg|png|gif|webp)$/i));
-                
+                const isVideo = file.type.startsWith('video');
+                const isImage = file.type.startsWith('image');
                 if (!isVideo && !isImage) continue;
 
                 const reader = new FileReader();
@@ -796,29 +788,53 @@
 
         const dropZone = document.getElementById('drop-zone');
         dropZone.onclick = () => document.getElementById('file-input').click();
-        dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('bg-blue-50'); };
-        dropZone.ondragleave = () => dropZone.classList.remove('bg-blue-50');
-        dropZone.ondrop = (e) => { e.preventDefault(); dropZone.classList.remove('bg-blue-50'); handleFiles(e.dataTransfer.files); };
-        document.getElementById('file-input').onchange = (e) => { 
-            handleFiles(e.target.files); 
-            e.target.value = ''; // 동일 파일 재선택 시에도 업로드 되도록 값 초기화
-        };
+        dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); };
+        dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
+        dropZone.ondrop = (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); };
+        document.getElementById('file-input').onchange = (e) => handleFiles(e.target.files);
 
         window.openModal = function() { document.getElementById('link-modal').classList.add('active'); }
         window.closeModal = function() { document.getElementById('link-modal').classList.remove('active'); }
+
+        function normalizeYouTubeUrl(url) {
+            if (url.includes('youtube.com/watch?v=')) return url.replace('watch?v=', 'embed/');
+            if (url.includes('youtu.be/')) return 'https://www.youtube.com/embed/' + url.split('/').pop().split('?')[0];
+            return url;
+        }
+
+        function detectProjectType(url, categoryInput) {
+            const lowered = (url || '').toLowerCase();
+            const category = (categoryInput || '').trim().toLowerCase();
+            const isVideoUrl = lowered.includes('youtube.com') || lowered.includes('youtu.be') || lowered.includes('vimeo.com') || /\.(mp4|webm|ogg|mov)(\?|$)/.test(lowered);
+            return {
+                type: isVideoUrl ? 'video' : 'image',
+                category: category || (isVideoUrl ? 'video' : '2d')
+            };
+        }
         
         window.addLinkProject = function() {
-            const url = document.getElementById('url-input').value;
-            const thumb = document.getElementById('thumb-input').value;
-            const category = document.getElementById('category-input-text').value || 'video';
+            const url = document.getElementById('url-input').value.trim();
+            const thumb = document.getElementById('thumb-input').value.trim();
+            const categoryInput = document.getElementById('category-input-text').value;
             if(!url) return;
-            let finalUrl = url;
-            if (url.includes('youtube.com/watch?v=')) finalUrl = url.replace('watch?v=', 'embed/');
-            else if (url.includes('youtu.be/')) finalUrl = 'https://www.youtube.com/embed/' + url.split('/').pop();
 
-            state.projects.unshift({ id: Date.now(), type: 'video', category, url: finalUrl, thumbnailUrl: thumb, title: '새 링크 프로젝트', desc: '설명 입력', tools: 'Video' });
+            const finalUrl = normalizeYouTubeUrl(url);
+            const detected = detectProjectType(finalUrl, categoryInput);
+
+            state.projects.unshift({ 
+                id: Date.now(), 
+                type: detected.type, 
+                category: detected.category, 
+                url: finalUrl, 
+                thumbnailUrl: thumb, 
+                title: '새 링크 프로젝트', 
+                desc: '설명 입력', 
+                tools: detected.type === 'video' ? 'Video' : 'Image' 
+            });
             window.saveData(); window.renderAll(); window.closeModal();
             document.getElementById('url-input').value = '';
+            document.getElementById('thumb-input').value = '';
+            document.getElementById('category-input-text').value = '';
         }
 
         window.deleteProject = function(id) { state.projects = state.projects.filter(p => p.id !== id); window.saveData(); window.renderAll(); }
@@ -881,6 +897,14 @@
         window.addContact = function() { state.contact.push({ id: Date.now(), label: 'SNS', value: '@id', icon: 'fa-link' }); window.saveData(); window.renderAll(); }
         window.deleteContact = function(id) { state.contact = state.contact.filter(c => c.id !== id); window.saveData(); window.renderAll(); }
         window.updateContact = function(id, f, v) { const x = state.contact.find(i => i.id === id); if(x){ x[f] = v; window.saveData(); } }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                document.getElementById('lightbox').classList.remove('active');
+                document.getElementById('lightbox-video').pause();
+                document.getElementById('link-modal').classList.remove('active');
+            }
+        });
     </script>
 </body>
 </html>
